@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+envs/
+venv/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+
+# Data and models
+data/
+*.pth
+*.pt
+*.bin
+*.h5
+*.pkl
+*.pickle
+*.npy
+*.npz
+
+# Logs and outputs
+logs/
+output/
+outputs/
+output_dir/
+*.log
+
+# Cache
+cache/
+.cache/
+*.cache
+hf_cache/
+huggingface_cache/
+pip_cache/
+.conda/
+.conda_pkgs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Large files
+*.whl
+*.tar.gz
+*.zip
+
+# Temporary files
+tmp/
+temp/
+*.tmp
