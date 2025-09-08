@@ -19,6 +19,12 @@ from transformers import (
     EarlyStoppingCallback,
     DataCollatorWithPadding
 )
+from peft import (
+    LoraConfig, 
+    get_peft_model, 
+    TaskType,
+    PeftModel
+)
 
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix
 import logging
@@ -136,9 +142,25 @@ def load_datasets(data_dir: str, tokenizer, max_length: int = 512, train_ratio: 
 def load_model_and_tokenizer(model_name: str, 
                            cache_dir: str = "./models/clinical_modern_bert",
                            num_labels: int = 2,
-                           class_weights: torch.Tensor = None):
+                           class_weights: torch.Tensor = None,
+                           use_lora: bool = False,
+                           lora_r: int = 16,
+                           lora_alpha: int = 32,
+                           lora_dropout: float = 0.1,
+                           lora_target_modules: list = None):
     """
-    加载模型和tokenizer
+    加载模型和tokenizer，支持LoRA微调
+    
+    Args:
+        model_name: 模型名称或路径
+        cache_dir: 缓存目录
+        num_labels: 分类标签数
+        class_weights: 类别权重
+        use_lora: 是否使用LoRA
+        lora_r: LoRA的rank
+        lora_alpha: LoRA的alpha参数
+        lora_dropout: LoRA的dropout率
+        lora_target_modules: 要应用LoRA的模块名称列表
     """
     logger.info("加载模型和tokenizer...")
     
@@ -170,14 +192,95 @@ def load_model_and_tokenizer(model_name: str,
         **load_kwargs
     )
     
-    # 如果有class weights，设置到模型中（可选：修改loss function）
+    # 应用LoRA
+    if use_lora:
+        logger.info("="*50)
+        logger.info("配置LoRA微调")
+        logger.info(f"  LoRA rank: {lora_r}")
+        logger.info(f"  LoRA alpha: {lora_alpha}")
+        logger.info(f"  LoRA dropout: {lora_dropout}")
+        
+        # 如果没有指定target_modules，使用默认配置
+        if lora_target_modules is None:
+            # 对于BERT类模型，通常target q_proj, v_proj
+            # 对于ModernBERT，可能需要调整
+            lora_target_modules = ["q_proj", "v_proj", "k_proj", "o_proj"]
+            logger.info(f"  使用默认target_modules: {lora_target_modules}")
+        else:
+            logger.info(f"  Target modules: {lora_target_modules}")
+        
+        # 创建LoRA配置
+        lora_config = LoraConfig(
+            task_type=TaskType.SEQ_CLS,
+            r=lora_r,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            target_modules=lora_target_modules,
+            bias="none",
+            modules_to_save=["classifier", "score"]  # 保存分类头
+        )
+        
+        # 应用LoRA到模型
+        model = get_peft_model(model, lora_config)
+        
+        # 确保分类器层的dtype与模型一致
+        # 对于LoRA模型，需要转换modules_to_save中的模块
+        def convert_modules_to_save_dtype(model, target_dtype):
+            """转换LoRA模型中modules_to_save的模块到指定dtype"""
+            logger.info(f"开始转换模型dtype到 {target_dtype}")
+            
+            # 方法1: 直接访问PEFT模型的modules_to_save属性
+            if hasattr(model, 'peft_config'):
+                # 获取活跃的adapter
+                active_adapter = getattr(model, 'active_adapter', 'default')
+                logger.info(f"当前活跃的adapter: {active_adapter}")
+                
+                # 查找并转换modules_to_save
+                for name, module in model.named_modules():
+                    if active_adapter in name and ('modules_to_save' in name or name.endswith('classifier')):
+                        logger.info(f"转换模块 {name} 的dtype")
+                        if hasattr(module, 'weight'):
+                            module.weight.data = module.weight.data.to(target_dtype)
+                            logger.info(f"  权重转换完成: {module.weight.dtype}")
+                        if hasattr(module, 'bias') and module.bias is not None:
+                            module.bias.data = module.bias.data.to(target_dtype)
+                            logger.info(f"  偏置转换完成: {module.bias.dtype}")
+            
+            # 方法2: 递归转换所有Linear层中的float32权重
+            for name, module in model.named_modules():
+                if isinstance(module, torch.nn.Linear):
+                    if module.weight.dtype == torch.float32:
+                        logger.info(f"转换Linear层 {name}: {module.weight.dtype} -> {target_dtype}")
+                        module.weight.data = module.weight.data.to(target_dtype)
+                        if module.bias is not None:
+                            module.bias.data = module.bias.data.to(target_dtype)
+        
+        convert_modules_to_save_dtype(model, dtype)
+        
+        # 打印可训练参数信息
+        model.print_trainable_parameters()
+        
+        logger.info("="*50)
+    
+    # 如果有class weights，设置到模型中
     if class_weights is not None:
         logger.info(f"设置类别权重: {class_weights}")
-        # 可以将权重保存到model以供后续使用
-        model.class_weights = class_weights.to(model.device) if torch.cuda.is_available() else class_weights
+        if hasattr(model, 'base_model'):
+            # LoRA模型
+            model.base_model.class_weights = class_weights.to(model.device) if torch.cuda.is_available() else class_weights
+        else:
+            # 普通模型
+            model.class_weights = class_weights.to(model.device) if torch.cuda.is_available() else class_weights
     
     logger.info(f"模型类型: {type(model).__name__}")
-    logger.info(f"参数数量: {sum(p.numel() for p in model.parameters()):,}")
+    
+    # 计算参数数量
+    if use_lora:
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        all_params = sum(p.numel() for p in model.parameters())
+        logger.info(f"可训练参数: {trainable_params:,} / {all_params:,} ({100 * trainable_params / all_params:.2f}%)")
+    else:
+        logger.info(f"参数数量: {sum(p.numel() for p in model.parameters()):,}")
     
     return model, tokenizer
 
@@ -239,7 +342,7 @@ class BinaryClassificationTrainer(Trainer):
             metrics[f'recall_class_{i}'] = recall_score if not np.isnan(f1_score) else 0.0
         
         for i, precision_score in enumerate(precision_per_class):
-            metrics[f'recall_class_{i}'] = precision_score if not np.isnan(f1_score) else 0.0
+            metrics[f'precision_class_{i}'] = precision_score if not np.isnan(f1_score) else 0.0
         
         return metrics
         
@@ -258,8 +361,9 @@ class BinaryClassificationTrainer(Trainer):
                 # 单卡训练
                 num_labels = model.config.num_labels
             
-            # 使用weighted cross entropy loss
-            loss_fct = nn.CrossEntropyLoss(weight=self.class_weights.to(self.args.device))
+            # 使用weighted cross entropy loss - 确保权重类型匹配模型精度
+            weights = self.class_weights.to(device=self.args.device, dtype=logits.dtype)
+            loss_fct = nn.CrossEntropyLoss(weight=weights)
             loss = loss_fct(logits.view(-1, num_labels), labels.view(-1))
         else:
             # 使用模型默认loss
@@ -327,14 +431,25 @@ def train_clinical_model(
     use_early_stopping: bool = True,
     patience: int = 2,
     train_ratio: float = 1.0,
-    deepspeed_config: str = None
+    deepspeed_config: str = None,
+    use_lora: bool = False,
+    lora_r: int = 16,
+    lora_alpha: int = 32,
+    lora_dropout: float = 0.1,
+    lora_target_modules: list = None,
+    bf16: bool = None
 ):
-    """统一的训练函数"""
+    """统一的训练函数，支持LoRA微调"""
     
-    # 1. 加载模型和tokenizer
+    # 1. 加载模型和tokenizer（传入LoRA参数）
     model, tokenizer = load_model_and_tokenizer(
         model_name=model_name,
-        cache_dir="./models/clinical_modern_bert"
+        cache_dir="./models/clinical_modern_bert",
+        use_lora=use_lora,
+        lora_r=lora_r,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        lora_target_modules=lora_target_modules
     )
     
     # 2. 加载数据集
@@ -385,8 +500,8 @@ def train_clinical_model(
         logging_steps=5,
         report_to=report_to,
         
-        # 优化设置 - DeepSpeed会覆盖这些设置
-        bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported() if not deepspeed_config else False,
+        # 优化设置
+        bf16=bf16 if bf16 is not None else (torch.cuda.is_available() and torch.cuda.is_bf16_supported()),
         dataloader_pin_memory=torch.cuda.is_available(),
         gradient_checkpointing=False,
         group_by_length=True,
@@ -461,12 +576,8 @@ def train_clinical_model(
             if key.startswith('eval_'):
                 logger.info(f"  {key}: {value:.4f}")
     
-    # 测试集评估（训练后自动评估）
-    test_dataset = datasets.get('test')
-    if test_dataset:
-        logger.info("使用训练后的模型评估测试集...")
-        test_metrics = evaluate_dataset(trainer.model, trainer.tokenizer, test_dataset)
-        results['test'] = test_metrics
+    # 注意：测试集评估应该通过--do_predict参数单独执行，不在训练后自动进行
+    # 这是为了遵循机器学习最佳实践，避免在模型选择过程中使用测试集
     
     # 保存结果
     results_path = Path(output_dir) / "results.json"
@@ -513,6 +624,8 @@ def parse_args():
                         help="禁用按长度分组批次")
     parser.add_argument("--use_class_weights", action="store_true",
                         help="使用类别权重处理数据不平衡")
+    parser.add_argument("--bf16", action="store_true",
+                        help="启用bf16混合精度训练")
     
     # 日志和报告
     parser.add_argument("--report_to", type=str, default="none",
@@ -540,6 +653,18 @@ def parse_args():
                         help="DeepSpeed配置文件路径")
     parser.add_argument("--local_rank", type=int, default=-1,
                         help="分布式训练的local rank")
+    
+    # LoRA相关参数
+    parser.add_argument("--use_lora", action="store_true",
+                        help="使用LoRA进行参数高效微调")
+    parser.add_argument("--lora_r", type=int, default=16,
+                        help="LoRA的rank值")
+    parser.add_argument("--lora_alpha", type=int, default=32,
+                        help="LoRA的alpha参数")
+    parser.add_argument("--lora_dropout", type=float, default=0.1,
+                        help="LoRA的dropout率")
+    parser.add_argument("--lora_target_modules", type=str, nargs="+", default=None,
+                        help="要应用LoRA的模块名称列表 (如: q_proj v_proj)")
     
     # 其他
     parser.add_argument("--seed", type=int, default=42,
@@ -583,7 +708,13 @@ def main():
             use_early_stopping=args.use_early_stopping,
             patience=args.patience,
             train_ratio=args.train_ratio,
-            deepspeed_config=args.deepspeed
+            deepspeed_config=args.deepspeed,
+            use_lora=args.use_lora,
+            lora_r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            lora_target_modules=args.lora_target_modules,
+            bf16=args.bf16
         )
         results.update(train_results)
     

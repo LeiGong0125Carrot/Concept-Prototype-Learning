@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 from transformers import DataCollatorWithPadding
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix
 import logging
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +56,10 @@ def evaluate_dataset(model, tokenizer, dataset, batch_size=32, device=None, retu
     all_labels = []
     all_probs = []
     
-    # 预测
+    # 预测（添加进度条）
     with torch.no_grad():
-        for batch in dataloader:
+        pbar = tqdm(dataloader, desc="评估进度", unit="batch")
+        for batch in pbar:
             # 移动数据到设备
             inputs = {k: v.to(device) for k, v in batch.items() if k != 'labels'}
             labels = batch['labels'].to(device)
@@ -75,6 +77,11 @@ def evaluate_dataset(model, tokenizer, dataset, batch_size=32, device=None, retu
             all_labels.extend(labels.cpu().numpy())
             # 转换为float32以避免BFloat16转换问题
             all_probs.extend(probs.float().cpu().numpy())
+            
+            # 更新进度条
+            pbar.set_postfix({
+                'batch_acc': (predictions == labels).float().mean().item()
+            })
     
     # 转换为numpy数组
     all_predictions = np.array(all_predictions)
@@ -105,16 +112,11 @@ def evaluate_dataset(model, tokenizer, dataset, batch_size=32, device=None, retu
         'class_0_precision': precision_per_class[0],
         'class_0_recall': recall_per_class[0],
         'class_0_f1': f1_per_class[0],
-        'class_0_support': int(support[0]),
         
         # 类别1的指标  
         'class_1_precision': precision_per_class[1],
         'class_1_recall': recall_per_class[1],
         'class_1_f1': f1_per_class[1],
-        'class_1_support': int(support[1]),
-        
-        # 混淆矩阵
-        'confusion_matrix': cm.tolist(),
         'total_samples': len(all_labels)
     }
     
@@ -139,7 +141,7 @@ def evaluate_dataset(model, tokenizer, dataset, batch_size=32, device=None, retu
                 logger.info(f"  {key}: {value:.4f}")
             else:
                 logger.info(f"  {key}: {value}")
-    logger.info(f"  混淆矩阵:\n{cm}")
+
     
     return metrics
 
@@ -277,32 +279,40 @@ def predict_batch(model, tokenizer, texts, batch_size=8, device=None):
     all_predictions = []
     all_probabilities = []
     
-    # 分批处理
-    for i in range(0, len(texts), batch_size):
-        batch_texts = texts[i:i + batch_size]
-        
-        # Tokenize
-        inputs = tokenizer(
-            batch_texts,
-            truncation=True,
-            padding=True,
-            max_length=512,
-            return_tensors="pt"
-        )
-        
-        # 移动到设备
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-        
-        # 预测
-        with torch.no_grad():
-            outputs = model(**inputs)
-            logits = outputs.logits
+    # 分批处理（添加进度条）
+    num_batches = (len(texts) + batch_size - 1) // batch_size
+    with tqdm(total=num_batches, desc="预测进度", unit="batch") as pbar:
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i + batch_size]
             
-            probs = torch.softmax(logits, dim=-1)
-            preds = torch.argmax(logits, dim=-1)
+            # Tokenize
+            inputs = tokenizer(
+                batch_texts,
+                truncation=True,
+                padding=True,
+                max_length=512,
+                return_tensors="pt"
+            )
             
-            all_predictions.extend(preds.cpu().numpy())
-            # 转换为float32以避免BFloat16转换问题
-            all_probabilities.extend(probs.float().cpu().numpy())
+            # 移动到设备
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            
+            # 预测
+            with torch.no_grad():
+                outputs = model(**inputs)
+                logits = outputs.logits
+                
+                probs = torch.softmax(logits, dim=-1)
+                preds = torch.argmax(logits, dim=-1)
+                
+                all_predictions.extend(preds.cpu().numpy())
+                # 转换为float32以避免BFloat16转换问题
+                all_probabilities.extend(probs.float().cpu().numpy())
+                
+            # 更新进度条
+            pbar.update(1)
+            pbar.set_postfix({
+                'processed': f"{min(i+batch_size, len(texts))}/{len(texts)}"
+            })
     
     return np.array(all_predictions), np.array(all_probabilities)

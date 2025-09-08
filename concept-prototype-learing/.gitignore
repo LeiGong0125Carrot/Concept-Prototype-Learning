@@ -17,6 +17,8 @@ pip-delete-this-directory.txt
 
 # Data and models
 data/
+models/
+dataset/
 *.pth
 *.pt
 *.bin
@@ -31,6 +33,7 @@ logs/
 output/
 outputs/
 output_dir/
+wandb/
 *.log
 
 # Cache
