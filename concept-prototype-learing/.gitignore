@@ -43,6 +43,7 @@ cache/
 hf_cache/
 huggingface_cache/
 pip_cache/
+torch_cache/
 .conda/
 .conda_pkgs/
 

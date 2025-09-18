@@ -1,0 +1,69 @@
+# 精确的24组参数配置
+# 每个配置都是手工选择的关键组合
+
+program: train_binary_classification.py
+method: grid
+metric:
+  name: eval_f1
+  goal: maximize
+
+count: 24  # 限制为24次运行
+
+parameters:
+  # === LoRA 参数 ===
+  lora_r:
+    # values: [16, 32, 64]
+    values: [16]
+  lora_alpha:
+    # values: [32, 64, 128]
+    values: [32]
+  lora_dropout:
+    value: 0.1
+  
+  # === 学习率参数 ===
+  learning_rate:
+    values: [1e-5, 2e-5, 5e-5]
+  lr_scheduler_type:
+    values: ["linear", "cosine"]
+  warmup_ratio:
+    value: 0.1
+    
+  # === 训练参数 ===
+  per_device_train_batch_size:
+    value: 5
+  gradient_accumulation_steps:
+    values: [4, 6, 8]
+  num_train_epochs:
+    value: 10
+    
+  # === 正则化 ===
+  weight_decay:
+    values: [0.01, 0.05]
+  
+  # === 固定参数 ===
+  model_name:
+    value: "Simonlee711/Clinical_ModernBERT"
+  use_lora:
+    value: true
+  use_flash_attention:
+    value: true
+  max_length:
+    value: 512
+  evaluation_strategy:
+    value: "epoch"
+  save_strategy:
+    value: "epoch"
+  load_best_model_at_end:
+    value: true
+  metric_for_best_model:
+    value: "eval_f1"
+  greater_is_better:
+    value: true
+  report_to:
+    value: "wandb"
+  logging_steps:
+    value: 100
+  save_total_limit:
+    value: 2
+
+# 使用贝叶斯优化在参数空间中智能搜索24组最优组合
