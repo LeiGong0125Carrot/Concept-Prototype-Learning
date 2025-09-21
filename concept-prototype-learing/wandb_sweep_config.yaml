@@ -1,0 +1,69 @@
+program: train_peft_deepspeed.py
+method: grid
+command:
+  - env
+  - CUDA_VISIBLE_DEVICES=0,1
+  - deepspeed
+  - --num_gpus=2
+  - ${program}
+  - ${args}
+  - --do_train
+  - --do_eval
+  - --do_predict
+  - --use_peft
+  - --use_class_weights
+  - --merge_and_save_peft
+
+metric:
+  name: eval/f1_class_1
+  goal: maximize
+
+parameters:
+  # 固定的基础参数
+  data_dir:
+    value: "/bigtemp/nkw3mr/cnlp_test/long-clinical-doc/datasets/30"
+  output_dir:
+    value: "/bigtemp/nkw3mr/concept-prototype-learing/outputs/sweep_clinical_modern"
+  model_name:
+    value: "Simonlee711/Clinical_ModernBERT"
+  num_epochs:
+    value: 20
+  max_length:
+    value: 8192
+  warmup_ratio:
+    value: 0.1
+  weight_decay:
+    value: 0.01
+  deepspeed:
+    value: "deepspeed_config_bf16_no_scheduler.json"
+  report_to:
+    value: "wandb"
+  seed:
+    value: 42
+  
+  # PEFT固定参数
+  peft_type:
+    value: "lora"
+  lora_alpha:
+    value: 32
+  lora_target_modules:
+    value: "query,value,key,dense"
+  
+  # 超参数搜索
+  batch_size:
+    values: [4, 6]
+  
+  gradient_accumulation_steps:
+    values: [4, 6, 8]
+  
+  learning_rate:
+    value: 0.00005
+  
+  lr_scheduler_type:
+    values: ["linear", "cosine"]
+  
+  lora_dropout:
+    values: [0.1, 0.2]
+  
+  lora_r:
+    value: 16

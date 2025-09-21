@@ -34,7 +34,7 @@ nohup bash -c "
         --data_dir /bigtemp/nkw3mr/cnlp_test/long-clinical-doc/datasets/30 \
         --num_epochs 20 \
         --batch_size 7 \
-        --learning_rate 5e-6 \
+        --learning_rate 5e-5 \
         --max_length 8192 \
         --deepspeed /bigtemp/nkw3mr/concept-prototype-learing/deepspeed_config_mixed_precision.json \
         --report_to wandb \
@@ -44,7 +44,7 @@ nohup bash -c "
         --use_class_weights \
         --merge_and_save_peft \
         --use_peft \
-        --lora_r 16 \
+        --lora_r 8 \
         --lora_alpha 32 \
         --lora_dropout 0.20 \
         --lora_target_modules query value key dense

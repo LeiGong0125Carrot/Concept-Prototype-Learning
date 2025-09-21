@@ -298,10 +298,19 @@ def create_peft_config(args):
         return None
     
     if args.peft_type == "lora":
+        # 处理lora_target_modules参数：支持逗号分隔的字符串
+        if len(args.lora_target_modules) == 1 and "," in args.lora_target_modules[0]:
+            # 如果是逗号分隔的字符串，分割它
+            target_modules = args.lora_target_modules[0].split(",")
+            target_modules = [module.strip() for module in target_modules]
+        else:
+            # 如果是多个参数，直接使用
+            target_modules = args.lora_target_modules
+        
         peft_config = LoraConfig(
             r=args.lora_r,
             lora_alpha=args.lora_alpha,
-            target_modules=args.lora_target_modules,
+            target_modules=target_modules,
             lora_dropout=args.lora_dropout,
             bias="none",
             task_type=TaskType.SEQ_CLS,
@@ -309,7 +318,8 @@ def create_peft_config(args):
             modules_to_save=["classifier"]  # 重要：保存classifier层以避免dtype不匹配
         )
         logger.info(f"创建LoRA配置: r={args.lora_r}, alpha={args.lora_alpha}, dropout={args.lora_dropout}")
-        logger.info(f"目标模块: {args.lora_target_modules}")
+        logger.info(f"原始目标模块参数: {args.lora_target_modules}")
+        logger.info(f"处理后的目标模块: {target_modules}")
         logger.info("包含classifier层在modules_to_save中")
         
     else:
@@ -472,6 +482,10 @@ def parse_args():
                         help="预热比例")
     parser.add_argument("--weight_decay", type=float, default=0.01,
                         help="权重衰减")
+    parser.add_argument("--lr_scheduler_type", type=str, default="linear",
+                        choices=["linear", "cosine", "cosine_with_restarts", "polynomial", 
+                                 "constant", "constant_with_warmup", "inverse_sqrt", "reduce_lr_on_plateau"],
+                        help="学习率调度器类型（注意：使用此参数需要配合deepspeed_config_bf16_no_scheduler.json）")
     
     # 优化设置
     parser.add_argument("--pad_to_multiple_of", type=int, default=64,
@@ -508,7 +522,7 @@ def parse_args():
                         help="LoRA dropout率")
     parser.add_argument("--lora_target_modules", type=str, nargs="+", 
                         default=["query", "value"],
-                        help="LoRA目标模块")
+                        help="LoRA目标模块（可以传入逗号分隔的字符串或多个参数）")
     parser.add_argument("--merge_and_save_peft", action="store_true",
                         help="训练完成后合并adapter并保存完整模型")
     
@@ -568,12 +582,15 @@ def main():
         logger.info("="*60)
     
     # 自动生成输出目录（只在主进程生成，避免多进程竞争）
-    if args.output_dir is None:
+    if args.output_dir:
         if local_rank == 0:
+            # 在指定的目录下创建带时间戳的子目录
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             model_short_name = args.model_name.split('/')[-1] if '/' in args.model_name else args.model_name
             peft_suffix = f"_peft_{args.peft_type}_r{args.lora_r}" if args.use_peft else ""
-            args.output_dir = f"./outputs/{model_short_name}_{timestamp}{peft_suffix}"
+            # 确保不会创建嵌套的相对路径
+            base_dir = Path(args.output_dir).resolve()  # 转换为绝对路径
+            args.output_dir = str(base_dir / f"{model_short_name}_{timestamp}{peft_suffix}")
             # 创建目录
             Path(args.output_dir).mkdir(parents=True, exist_ok=True)
             # 将output_dir写入临时文件，供其他进程读取
@@ -592,9 +609,16 @@ def main():
                 model_short_name = args.model_name.split('/')[-1] if '/' in args.model_name else args.model_name
                 peft_suffix = f"_peft_{args.peft_type}_r{args.lora_r}" if args.use_peft else ""
                 args.output_dir = f"./outputs/{model_short_name}_{timestamp}{peft_suffix}"
-    elif local_rank == 0:
-        # 如果指定了输出目录，只在主进程创建
-        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    else:
+        # 如果没有指定输出目录，设置默认值并在主进程创建
+        if local_rank == 0:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            model_short_name = args.model_name.split('/')[-1] if '/' in args.model_name else args.model_name
+            peft_suffix = f"_peft_{args.peft_type}_r{args.lora_r}" if args.use_peft else ""
+            args.output_dir = f"./outputs/{model_short_name}_{timestamp}{peft_suffix}"
+            # 创建目录
+            Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+            logger.info(f"未指定输出目录，使用默认值: {args.output_dir}")
     if local_rank == 0:
         logger.info(f"输出目录: {args.output_dir}")
     
@@ -691,6 +715,7 @@ def main():
         learning_rate=args.learning_rate,
         warmup_ratio=args.warmup_ratio,
         weight_decay=args.weight_decay,
+        lr_scheduler_type=args.lr_scheduler_type,
         
         # 评估策略
         eval_strategy="epoch" if dev_dataset else "no",
